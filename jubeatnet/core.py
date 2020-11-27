@@ -168,7 +168,7 @@ class JubeatChart:
             time_unit_value = (
                 beat_count
                 if time_unit == "beats"
-                else beat_count * self.metadata.bpm / 60
+                else beat_count / (self.metadata.bpm / 60)
             )
             if time_format == "absolute":
                 yeet.append(
@@ -187,7 +187,7 @@ class JubeatChart:
                     next_time_unit_value = (
                         next_beat_count - beat_count
                         if time_unit == "beats"
-                        else (next_beat_count - beat_count) * self.metadata.bpm / 60
+                        else (next_beat_count - beat_count) / (self.metadata.bpm / 60)
                     )
                 except IndexError:
                     next_time_unit_value = np.inf
