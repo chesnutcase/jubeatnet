@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import json
-from typing import NamedTuple, List, Tuple, NewType
+from typing import NamedTuple, List, Tuple, NewType, Optional, Any
 import numpy as np
+from enum import IntEnum
 
 
 class Pattern:
@@ -117,6 +118,188 @@ class Pattern:
         p.hold_starts = set(json_dict["hold_starts"])
         p.hold_ticks = set(json_dict["hold_ticks"])
         return p
+
+
+class PatternFingering:
+    class FingerMapping(IntEnum):
+        LEFT_PINKY = 1
+        LEFT_RING = 2
+        LEFT_MIDDLE = 3
+        LEFT_INDEX = 4
+        LEFT_THUMB = 5
+        RIGHT_THUMB = 6
+        RIGHT_INDEX = 7
+        RIGHT_MIDDLE = 8
+        RIGHT_RING = 9
+        RIGHT_PINKY = 10
+        UNKNOWN = 0
+
+    def __init__(self, pattern: Pattern):
+        self.pattern = pattern
+        self.fingering = np.zeros((4, 4), dtype=int)
+
+    def set_finger_matrix(self, fingering: np.array):
+        assert fingering.shape == (4, 4)
+        for finger in np.nditer(fingering):
+            _ = PatternFingering.FingerMapping(finger)
+        self.fingering = np.copy(fingering)
+
+    def get_finger_matrix(self) -> np.array:
+        return np.copy(self.fingering)
+
+    def to_numpy_arrays(
+        self, *, pattern_kwargs: dict = None
+    ) -> Tuple[np.array, np.array]:
+        if pattern_kwargs is None:
+            pattern_kwargs = dict()
+        return self.pattern.to_numpy_array(**pattern_kwargs), self.get_finger_matrix()
+
+    def to_json_dict(self) -> dict:
+        """
+        Serializes to a json-friendly dictionary that can be consumed by `json.dumps`.
+
+        :return: json-friendly dictionary representation
+        """
+        obj = dict()
+        obj["pattern"] = self.pattern.to_json_dict()
+        obj["fingering"] = self.fingering.tolist()
+        return obj
+
+    @classmethod
+    def from_json_dict(cls, json_dict: dict) -> PatternFingering:
+        """
+        Deserializes from a json dict.
+
+        :param json_dict: the json dictionary to read from
+        :return: a new instance of Pattern
+        """
+        pattern = Pattern.from_json_dict(json_dict["pattern"])
+        fingering = np.array(json_dict["fingering"], dtype=int)
+        pf = PatternFingering(pattern)
+        pf.set_finger_matrix(fingering)
+        return pf
+
+    def __repr__(self):
+        return (self.pattern.to_numpy_array(), self.fingering).__repr__()
+
+
+class TimedSequence:
+    class TimeSelector:
+        def get_start_index(self, ts: TimedSequence) -> Optional[int]:
+            pass
+
+        def get_end_index(self, ts: TimedSequence) -> Optional[int]:
+            pass
+
+    class Percent(TimeSelector):
+        def __init__(self, percent: float):
+            assert 0 <= percent <= 1
+            self.percent = percent
+
+        def get_start_index(self, ts: TimedSequence) -> Optional[int]:
+            last_beat = ts.sequence[-1][0]
+            min_beat = last_beat * self.percent
+            for i, (beat_count, _) in enumerate(ts.sequence):
+                if beat_count >= min_beat:
+                    return i
+            raise ValueError("This shouldn't happen, please file bug report")
+
+        def get_end_index(self, ts: TimedSequence) -> Optional[int]:
+            last_beat = ts.sequence[-1][0]
+            max_beat = last_beat * self.percent
+            for i, (beat_count, _) in enumerate(ts.sequence[::-1]):
+                if beat_count <= max_beat:
+                    return len(ts.sequence) - 1
+            return len(ts.sequence) - 1
+
+    class Beat(TimeSelector):
+        def __init__(self, beat: float):
+            assert beat >= 0
+            self.beat = beat
+
+        def get_start_index(self, ts: TimedSequence) -> Optional[int]:
+            for i, (beat_count, _) in enumerate(ts.sequence):
+                if beat_count >= self.beat:
+                    return i
+            raise ValueError("This shouldn't happen, please file bug report")
+
+        def get_end_index(self, ts: TimedSequence) -> Optional[int]:
+            for i, (beat_count, _) in enumerate(ts.sequence[::-1]):
+                if beat_count <= self.beat:
+                    return len(ts.sequence) - i
+            return len(ts.sequence) - i
+
+    class Second(TimeSelector):
+        def __init__(self, seconds: float):
+            assert seconds >= 0
+            self.seconds = seconds
+
+        def get_start_index(self, ts: TimedSequence) -> Optional[int]:
+            last_beat = ts.sequence[-1][0]
+            min_beat = ts.bpm / 60 * self.seconds
+            if min_beat > last_beat:
+                return None
+            for i, (beat_count, _) in enumerate(ts.sequence):
+                if beat_count >= min_beat:
+                    return i
+            raise ValueError("This shouldn't happen, please file bug report")
+
+        def get_end_index(self, ts: TimedSequence) -> Optional[int]:
+            last_beat = ts.sequence[-1][0]
+            max_beat = ts.bpm / 60 * self.seconds
+            if max_beat > last_beat:
+                return None
+            for i, (beat_count, _) in enumerate(ts.sequence[::-1]):
+                if beat_count <= max_beat:
+                    return len(ts.sequence) - i
+            return len(ts.sequence) - i
+
+    def __init__(self, sequence: List[Tuple[float, Any]], bpm: float):
+        self.sequence = sequence
+        self.bpm = bpm
+
+    def __getitem__(self, key):
+        if isinstance(key, int):
+            return self.sequence[key]
+        if isinstance(key, slice):
+            index_types = [type(index) for index in (key.start, key.stop)]
+            # check the types are some sort of TimeSelector
+            if not issubclass(
+                index_types[0], (TimedSequence.TimeSelector, None.__class__)
+            ) or not issubclass(
+                index_types[1], (TimedSequence.TimeSelector, None.__class__)
+            ):
+                raise TypeError(
+                    "Slice index types must be a subclass of TimedSequence.TimeSelector"
+                )
+            slice_start: TimedSequence.TimeSelector = key.start
+            slice_end: TimedSequence.TimeSelector = key.stop
+            index_start = None
+            index_end = None
+            if slice_start is not None:
+                index_start = slice_start.get_start_index(self)
+            if slice_end is not None:
+                index_end = slice_end.get_end_index(self)
+            return self.sequence[index_start:index_end]
+        raise TypeError("Unsupported index type")
+
+    def __len__(self):
+        return self.sequence.__len__()
+
+    def __delitem__(self, key):
+        return self.sequence.__delitem__(key)
+
+    def __setitem__(self, key, value):
+        return self.sequence.__setitem__(key, value)
+
+    def __iter__(self):
+        return self.sequence.__iter__()
+
+    def __reversed__(self):
+        return self.sequence.__reversed__()
+
+    def __contains__(self, item):
+        return self.sequence.__contains__(item)
 
 
 class JubeatChart:
@@ -265,6 +448,91 @@ class JubeatChart:
 
     @classmethod
     def from_json_string(cls, json_str: str) -> JubeatChart:
+        """
+        Deserializes from a JSON String
+
+        :param json_str: JSON String representation
+        :return: a new instance of JubeatChart
+        """
+        return cls.from_json_dict(json.loads(json_str))
+
+
+class JubeatChartFingering:
+    def __init__(
+        self,
+        chart: JubeatChart,
+        name: str,
+        fingering_sequence: List[Tuple[float, PatternFingering]] = None,
+    ):
+        self.chart = chart
+        self.name = name
+        if fingering_sequence is None:
+            self.fingering_sequence: List[Tuple[float, PatternFingering]] = [
+                (beat_count, PatternFingering(pattern))
+                for (beat_count, pattern) in self.chart.sequence
+            ]
+        else:
+            self.fingering_sequence: List[
+                Tuple[float, PatternFingering]
+            ] = fingering_sequence
+
+    def set_pattern_fingering(self, pattern_index: int, fingering: PatternFingering):
+        self.fingering_sequence[pattern_index] = (
+            self.fingering_sequence[pattern_index][0],
+            fingering,
+        )
+
+    def to_json_dict(self) -> dict:
+        """
+        Serializes to a json-friendly dictionary that can be consumed by `json.dumps`.
+
+        :return: json-friendly dictionary representation
+        """
+        obj = dict()
+        obj["name"] = self.name
+        obj["metadata"] = self.chart.metadata._asdict()
+        obj["fingering_sequence"] = [
+            {"beat_count": beat_count, **fingering.to_json_dict()}
+            for (beat_count, fingering) in self.fingering_sequence
+        ]
+        return obj
+
+    def to_json_string(self) -> str:
+        """
+        Serializes to a JSON string
+
+        :return: JSON string representation
+        """
+        return json.dumps(self.to_json_dict())
+
+    @classmethod
+    def from_json_dict(cls, json_dict: dict) -> JubeatChartFingering:
+        """
+        Deserializes from a json dict.
+
+        :param json_dict: the json dictionary to read from
+        :return: a new instance of Pattern
+        """
+        name = json_dict["name"]
+        metadata = json_dict["metadata"]
+        pattern_sequence = [
+            (item["beat_count"], Pattern.from_json_dict(item["pattern"]))
+            for item in json_dict["fingering"]
+        ]
+        chart = JubeatChart(metadata, pattern_sequence)
+        fingering = [
+            (
+                item["beat_count"],
+                PatternFingering.from_json_dict(
+                    {"pattern": item["pattern"], "fingering": item["fingering"]}
+                ),
+            )
+            for item in json_dict["fingering"]
+        ]
+        return JubeatChartFingering(chart, name, fingering)
+
+    @classmethod
+    def from_json_string(cls, json_str: str) -> JubeatChartFingering:
         """
         Deserializes from a JSON String
 
