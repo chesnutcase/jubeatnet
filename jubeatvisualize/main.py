@@ -143,6 +143,7 @@ class MainWindow(QMainWindow):
     def array_to_img(self,array):
         image = np.zeros((400,400,3), np.uint8)
         image[image == 0] = 255
+        image = cv2.rectangle(image,(0,0),(399,399),(0,0,0),1)
         for i in range(4): 
             for j in range(4):
                 image = cv2.rectangle(image,(i*100,j*100),((i+1)*100,(j+1)*100),(0,0,0),1)
@@ -167,16 +168,6 @@ class MainWindow(QMainWindow):
             self.scene = QGraphicsScene()
             self.scene.addPixmap(QPixmap.fromImage(image))
             self.imgView.setScene(self.scene)
-            # set image 
-            # set blank
-            # image = QImage(self.blank, frame.shape[1], frame.shape[0],
-            #       frame.strides[0], QImage.Format_RGB888)
-            # self.scene = QGraphicsScene()
-            # self.scene.addPixmap(QPixmap.fromImage(image))
-            # self.imgView.setScene(self.scene)
-            # time.sleep(0.001)
-
-            # print("hiya")
 
 
     ###################
